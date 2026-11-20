@@ -46,3 +46,20 @@ El inicializador crea los siete roles y ocho cuentas solicitados. Contraseña in
 | DirectorComercial | `director@ariasempire.com` |
 
 Cambie las contraseñas iniciales antes de utilizar el sistema con datos de producción.
+
+## Despliegue con Docker
+
+Requiere Docker Desktop con Docker Compose. Compose inicia la aplicación y SQL Server Express; al arrancar, la aplicación aplica las migraciones automáticamente.
+
+En PowerShell, desde la raíz del proyecto:
+
+```powershell
+Copy-Item .env.example .env
+# Edite .env y reemplace MSSQL_SA_PASSWORD por una contraseña única y fuerte.
+docker compose up --build -d
+docker compose logs -f app
+```
+
+Abra `http://localhost:8080`. El puerto queda enlazado solo a la interfaz local para no exponer HTTP directamente a Internet; publique la aplicación mediante un proxy inverso con HTTPS. Los datos de SQL Server y los archivos cargados se conservan en volúmenes Docker (`sql_data` y `uploads`). `docker compose down` conserva esos volúmenes; `docker compose down -v` los elimina junto con los datos.
+
+La conexión SQL usa cifrado con certificado confiable dentro de la red Compose. Para producción, proteja el acceso público con HTTPS mediante un proxy inverso y reemplace las contraseñas iniciales de Identity antes de exponer la aplicación. Si usa un SQL Server administrado, configure `ConnectionStrings__DefaultConnection` con su cadena de conexión y despliegue solo el servicio `app`; SQL Server Express incluido está pensado para despliegues pequeños y tiene sus límites de edición.

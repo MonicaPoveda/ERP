@@ -1,0 +1,86 @@
+@page "/"
+@attribute [Authorize]
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+
+<PageTitle>Panel principal · Arias Empire ERP</PageTitle>
+<div class="page-heading">
+    <div><span class="eyebrow">CENTRO DE OPERACIONES</span><h1>Panel principal</h1><p>Indicadores actualizados desde la base de datos.</p></div>
+</div>
+
+@if (metrics is null)
+{
+    <p><em>Cargando indicadores…</em></p>
+}
+else
+{
+    <div class="metric-grid">
+        @foreach (var metric in metrics)
+        {
+            <article class="metric-card"><span>@metric.Label</span><strong>@metric.Value</strong><small>@metric.Note</small></article>
+        }
+    </div>
+    <div class="surface-card mt-4">
+        <h2>Acceso a módulos</h2>
+        <div class="module-grid">
+            @foreach (var module in modules)
+            {
+                <a class="module-link" href="@module.Url"><span class="module-icon">@module.Icon</span><span><strong>@module.Name</strong><small>@module.Description</small></span><b>→</b></a>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private List<Metric>? metrics;
+    private readonly List<ModuleLink> modules = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        metrics = [];
+        if (user.IsInRole("SuperAdmin"))
+        {
+            var users = await db.Users.CountAsync();
+            var locked = await db.Users.CountAsync(x => x.LockoutEnd != null && x.LockoutEnd > DateTimeOffset.UtcNow);
+            metrics.AddRange([new("Usuarios", users.ToString(), "Cuentas registradas"), new("Cuentas suspendidas", locked.ToString(), "Bloqueo vigente"), new("Registros auditados", (await db.AuditLogs.CountAsync()).ToString(), "Eventos persistidos")]);
+            modules.Add(new("Administración", "Usuarios, roles, auditoría y empresa", "administracion", "⚙"));
+        }
+        if (user.IsInRole("CoordinadorProveedores"))
+        {
+            metrics.Add(new("Proveedores activos", (await db.Suppliers.CountAsync()).ToString(), "Directorio vigente"));
+            modules.Add(new("Proveedores", "Fichas técnicas y evaluaciones", "proveedores", "▤"));
+        }
+        if (user.IsInRole("Tesorero"))
+        {
+            var receivable = await db.Invoices.SumAsync(x => (decimal?)x.Balance) ?? 0;
+            var payable = await db.ExpenseRequests.Where(x => x.Status == "Aprobada").SumAsync(x => (decimal?)x.Amount) ?? 0;
+            metrics.AddRange([new("Cuentas por cobrar", receivable.ToString("C0"), "Saldo de facturas"), new("Cuentas por pagar", payable.ToString("C0"), "Gastos aprobados"), new("Negocios cerrados", (await db.BusinessDeals.CountAsync(x => x.Stage == "Cierre")).ToString(), "Disponibles para facturar")]);
+            modules.Add(new("Finanzas", "Facturación, pagos y egresos", "finanzas", "$"));
+        }
+        if (user.IsInRole("RRHH"))
+        {
+            metrics.AddRange([new("Empleados activos", (await db.Employees.CountAsync(x => x.IsActive)).ToString(), "Nómina"), new("Contratos por vencer", (await db.Employees.CountAsync(x => x.IsActive && x.ContractEndDate >= DateTime.Today && x.ContractEndDate <= DateTime.Today.AddDays(30))).ToString(), "Próximos 30 días"), new("Solicitudes pendientes", (await db.HrRequests.CountAsync(x => x.Status == "Pendiente")).ToString(), "Vacaciones e incapacidades")]);
+            modules.Add(new("Talento humano", "Empleados, novedades y nómina", "rrhh", "♙"));
+        }
+        if (user.IsInRole("Almacenista"))
+        {
+            var lowStock = await db.InventoryProducts.CountAsync(x => x.StockCurrent <= x.StockMinimum);
+            metrics.AddRange([new("Productos", (await db.InventoryProducts.CountAsync()).ToString(), "Referencias en inventario"), new("Stock crítico", lowStock.ToString(), "Igual o bajo el mínimo")]);
+            modules.Add(new("Inventario", "Existencias, movimientos y kardex", "inventario", "▦"));
+        }
+        if (user.IsInRole("AsesorComercial") || user.IsInRole("DirectorComercial"))
+        {
+            var id = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "";
+            var query = db.BusinessDeals.AsNoTracking().AsQueryable();
+            if (user.IsInRole("AsesorComercial") && !user.IsInRole("DirectorComercial")) query = query.Where(x => x.AdvisorId == id);
+            metrics.AddRange([new("Prospectos", (await query.CountAsync()).ToString(), "Pipeline comercial"), new("Negocios cerrados", (await query.CountAsync(x => x.Stage == "Cierre")).ToString(), "Cierres registrados")]);
+            modules.Add(new("Gestión comercial", "CRM y seguimiento de negocios", "crm", "◎"));
+        }
+    }
+
+    private sealed record Metric(string Label, string Value, string Note);
+    private sealed record ModuleLink(string Name, string Description, string Url, string Icon);
+}

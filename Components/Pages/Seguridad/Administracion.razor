@@ -1,0 +1,260 @@
+@page "/administracion"
+@attribute [Authorize(Roles = "SuperAdmin")]
+@inject UserManager<ApplicationUser> UserManager
+@inject RoleManager<IdentityRole> RoleManager
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject AuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IWebHostEnvironment Environment
+
+<PageTitle>Administración y seguridad</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">CONTROL DE ACCESO</span><h1>Administración y seguridad</h1><p>Usuarios, roles, auditoría y configuración corporativa.</p></div></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+<div class="metric-grid mb-4">
+    <article class="metric-card"><span>Usuarios</span><strong>@users.Count</strong><small>Identidades persistidas</small></article>
+    <article class="metric-card"><span>Activos</span><strong>@users.Count(x => x.LockoutEnd is null || x.LockoutEnd <= DateTimeOffset.UtcNow)</strong><small>Sin bloqueo vigente</small></article>
+    <article class="metric-card"><span>Alertas de seguridad</span><strong>@blockedUsers · @failedAttempts</strong><small>Cuentas bloqueadas · intentos fallidos acumulados</small></article>
+    <article class="metric-card"><span>Eventos auditados</span><strong>@audits.Count</strong><small>Últimos 250 registros</small></article>
+</div>
+<div class="surface-card mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h2 class="mb-0">Cuentas de usuario</h2><button class="btn btn-primary" @onclick="NewUser">Crear usuario</button></div>
+    <div class="table-responsive mt-3"><table class="table table-hover align-middle"><thead><tr><th>Usuario</th><th>Teléfono</th><th>Roles</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
+    @foreach (var user in users)
+    {
+        <tr><td>@user.Email</td><td>@user.PhoneNumber</td><td>@string.Join(", ", userRoles.GetValueOrDefault(user.Id, []))</td><td><StatusBadge Text="@(user.LockoutEnd > DateTimeOffset.UtcNow ? "Bloqueado" : "Activo")" /></td>
+        <td class="d-flex gap-1"><button class="btn btn-sm btn-outline-primary" @onclick="() => EditUser(user)">Editar</button><button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenRoles(user)">Roles</button><button class="btn btn-sm btn-outline-warning" @onclick="() => ToggleLockAsync(user)">@(user.LockoutEnd > DateTimeOffset.UtcNow ? "Reactivar" : "Suspender")</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteUserAsync(user)">Eliminar</button></td></tr>
+    }
+    </tbody></table></div>
+</div>
+<div class="surface-card mb-4">
+    <h2>Configuración corporativa</h2>
+    <EditForm Model="company" OnValidSubmit="SaveCompanyAsync">
+        <DataAnnotationsValidator /><div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Razón social</label><InputText class="form-control" @bind-Value="company.LegalName" /></div>
+            <div class="col-md-6"><label class="form-label">NIT</label><InputText class="form-control" @bind-Value="company.TaxId" /></div>
+            <div class="col-md-8"><label class="form-label">Dirección</label><InputText class="form-control" @bind-Value="company.Address" /></div>
+            <div class="col-md-4"><label class="form-label">Logo corporativo</label><InputFile OnChange="UploadLogoAsync" accept="image/png,image/jpeg,image/webp" /></div>
+            <div class="col-md-6"><label class="form-label">Meta mensual de comisiones por asesor</label><InputNumber class="form-control" min="0" @bind-Value="company.MonthlyCommissionGoal" /></div>
+            <div class="col-md-6"><label class="form-label">Comisión sobre negocios cerrados (%)</label><InputNumber class="form-control" min="0" max="100" step="0.1" @bind-Value="commissionPercent" /></div>
+            <div class="col-md-6"><label class="form-label">Retención en la fuente (%)</label><InputNumber class="form-control" min="0" max="100" step="0.1" @bind-Value="withholdingPercent" /></div>
+        </div><button class="btn btn-primary mt-3" type="submit">Guardar configuración</button>
+    </EditForm>
+    @if (!string.IsNullOrWhiteSpace(company.LogoPath)) { <img class="mt-3" src="@company.LogoPath" alt="Logo corporativo" style="max-width:180px;max-height:80px" /> }
+</div>
+<div class="surface-card">
+    <h2>Auditoría de solo lectura</h2>
+    <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Fecha UTC</th><th>Usuario</th><th>Rol</th><th>Acción</th><th>Entidad</th><th>Detalle</th></tr></thead><tbody>
+    @foreach (var log in audits) { <tr><td>@log.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td><td>@log.UserName</td><td>@log.Role</td><td>@log.Action</td><td>@log.EntityName</td><td>@log.Detail</td></tr> }
+    </tbody></table></div>
+</div>
+
+<ModalDialog IsOpen="showUserModal" Title="@(userInput.Id is null ? "Crear usuario" : "Editar usuario")" OnClose="CloseUserModal">
+    <EditForm Model="userInput" OnValidSubmit="SaveUserAsync">
+        <DataAnnotationsValidator /><ValidationSummary />
+        <div class="mb-3"><label class="form-label">Correo</label><InputText class="form-control" @bind-Value="userInput.Email" /></div>
+        <div class="mb-3"><label class="form-label">Teléfono</label><InputText class="form-control" @bind-Value="userInput.PhoneNumber" /></div>
+        @if (userInput.Id is null) { <div class="mb-3"><label class="form-label">Contraseña inicial</label><InputText type="password" class="form-control" @bind-Value="userInput.Password" /></div> }
+        @if (userInput.Id is null)
+        {
+            <fieldset class="mb-3"><legend class="form-label">Roles iniciales</legend>
+            @foreach (var role in allRoles) { <label class="form-check d-block"><InputCheckbox class="form-check-input" @bind-Value="createRoleSelection[role]" /><span class="form-check-label ms-2">@role</span></label> }
+            </fieldset>
+        }
+        <div class="d-flex justify-content-end gap-2"><button type="button" class="btn btn-outline-secondary" @onclick="CloseUserModal">Cancelar</button><button class="btn btn-primary">Guardar</button></div>
+    </EditForm>
+</ModalDialog>
+
+<ModalDialog IsOpen="showRolesModal" Title="@($"Roles de {selectedUser?.Email}")" OnClose="CloseRolesModal">
+    @foreach (var role in allRoles)
+    {
+        <label class="form-check d-block mb-2"><InputCheckbox class="form-check-input" @bind-Value="roleSelection[role]" /><span class="form-check-label ms-2">@role</span></label>
+    }
+    <div class="d-flex justify-content-end mt-3"><button class="btn btn-primary" @onclick="SaveRolesAsync">Guardar roles</button></div>
+</ModalDialog>
+
+@code {
+    private readonly string[] allRoles = ["SuperAdmin", "CoordinadorProveedores", "Tesorero", "RRHH", "Almacenista", "AsesorComercial", "DirectorComercial"];
+    private List<ApplicationUser> users = [];
+    private List<AuditLog> audits = [];
+    private Dictionary<string, List<string>> userRoles = [];
+    private CompanySetting company = new();
+    private decimal commissionPercent { get => company.CommissionRate * 100m; set => company.CommissionRate = value / 100m; }
+    private decimal withholdingPercent { get => company.WithholdingRate * 100m; set => company.WithholdingRate = value / 100m; }
+    private UserForm userInput = new();
+    private ApplicationUser? selectedUser;
+    private Dictionary<string, bool> roleSelection = [];
+    private Dictionary<string, bool> createRoleSelection = [];
+    private bool showUserModal, showRolesModal;
+    private string? message, error;
+    private int blockedUsers, failedAttempts;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        users = await UserManager.Users.OrderBy(x => x.Email).ToListAsync();
+        blockedUsers = users.Count(x => x.LockoutEnd > DateTimeOffset.UtcNow);
+        failedAttempts = users.Sum(x => x.AccessFailedCount);
+        userRoles = [];
+        foreach (var user in users) userRoles[user.Id] = (await UserManager.GetRolesAsync(user)).ToList();
+        audits = await Audit.RecentAsync();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        company = await db.CompanySettings.FirstOrDefaultAsync() ?? new CompanySetting();
+    }
+
+    private void NewUser()
+    {
+        userInput = new UserForm();
+        createRoleSelection = allRoles.ToDictionary(x => x, x => x == "AsesorComercial");
+        error = null;
+        showUserModal = true;
+    }
+    private void EditUser(ApplicationUser user) { userInput = new UserForm { Id = user.Id, Email = user.Email ?? "", PhoneNumber = user.PhoneNumber ?? "" }; error = null; showUserModal = true; }
+    private Task CloseUserModal() { showUserModal = false; return Task.CompletedTask; }
+    private Task CloseRolesModal() { showRolesModal = false; return Task.CompletedTask; }
+
+    private async Task SaveUserAsync()
+    {
+        error = null;
+        try
+        {
+            IdentityResult result;
+            if (userInput.Id is null)
+            {
+                if (!createRoleSelection.Values.Any(x => x)) throw new InvalidOperationException("Seleccione al menos un rol.");
+                var user = new ApplicationUser { UserName = userInput.Email, Email = userInput.Email, PhoneNumber = userInput.PhoneNumber, EmailConfirmed = true };
+                result = await UserManager.CreateAsync(user, userInput.Password);
+                if (!result.Succeeded) throw new InvalidOperationException(string.Join("; ", result.Errors.Select(x => x.Description)));
+                foreach (var role in allRoles.Where(x => createRoleSelection[x]))
+                    EnsureIdentity(await UserManager.AddToRoleAsync(user, role));
+            }
+            else
+            {
+                var user = await UserManager.FindByIdAsync(userInput.Id) ?? throw new InvalidOperationException("Usuario no encontrado.");
+                user.Email = userInput.Email;
+                user.UserName = userInput.Email;
+                user.PhoneNumber = userInput.PhoneNumber;
+                result = await UserManager.UpdateAsync(user);
+                if (!result.Succeeded) throw new InvalidOperationException(string.Join("; ", result.Errors.Select(x => x.Description)));
+            }
+            await RecordAuditAsync(userInput.Id is null ? "Crear" : "Editar", "IdentityUser", userInput.Email);
+            showUserModal = false;
+            message = "Usuario guardado correctamente.";
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or DbUpdateException) { error = ex.Message; }
+    }
+
+    private async Task OpenRoles(ApplicationUser user)
+    {
+        selectedUser = user;
+        roleSelection = [];
+        foreach (var role in allRoles) roleSelection[role] = await UserManager.IsInRoleAsync(user, role);
+        showRolesModal = true;
+    }
+
+    private async Task SaveRolesAsync()
+    {
+        if (selectedUser is null) return;
+        try
+        {
+            if (!roleSelection.Values.Any(x => x)) throw new InvalidOperationException("Un usuario debe conservar al menos un rol.");
+            var current = await UserManager.GetRolesAsync(selectedUser);
+            foreach (var role in allRoles)
+            {
+                if (roleSelection[role] && !current.Contains(role)) EnsureIdentity(await UserManager.AddToRoleAsync(selectedUser, role));
+                else if (!roleSelection[role] && current.Contains(role)) EnsureIdentity(await UserManager.RemoveFromRoleAsync(selectedUser, role));
+            }
+            await RecordAuditAsync("Editar", "IdentityRole", selectedUser.Email ?? "");
+            await CloseRolesModal();
+            await LoadAsync();
+        }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+
+    private async Task ToggleLockAsync(ApplicationUser user)
+    {
+        var principal = await CurrentPrincipalAsync();
+        if (user.Id == UserManager.GetUserId(principal)) { error = "No puede suspender su propia cuenta."; return; }
+        if (user.LockoutEnd is not null && user.LockoutEnd > DateTimeOffset.UtcNow) EnsureIdentity(await UserManager.SetLockoutEndDateAsync(user, null));
+        else EnsureIdentity(await UserManager.SetLockoutEndDateAsync(user, DateTimeOffset.UtcNow.AddYears(100)));
+        await RecordAuditAsync("Editar", "IdentityUser", "Cambio de estado: " + user.Email);
+        await LoadAsync();
+    }
+
+    private async Task DeleteUserAsync(ApplicationUser user)
+    {
+        var principal = await CurrentPrincipalAsync();
+        if (user.Id == UserManager.GetUserId(principal)) { error = "No puede eliminar su propia cuenta."; return; }
+        EnsureIdentity(await UserManager.DeleteAsync(user));
+        await RecordAuditAsync("Eliminar", "IdentityUser", user.Email ?? "");
+        await LoadAsync();
+    }
+
+    private async Task SaveCompanyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(company.LegalName) || string.IsNullOrWhiteSpace(company.TaxId) || string.IsNullOrWhiteSpace(company.Address))
+        {
+            error = "Razón social, NIT y dirección son obligatorios.";
+            return;
+        }
+        if (company.MonthlyCommissionGoal < 0 || company.CommissionRate is < 0 or > 1 || company.WithholdingRate is < 0 or > 1)
+        {
+            error = "La meta no puede ser negativa y las tasas deben estar entre 0 % y 100 %.";
+            return;
+        }
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (company.Id == 0) db.CompanySettings.Add(company); else db.CompanySettings.Update(company);
+        await db.SaveChangesAsync();
+        await RecordAuditAsync("Editar", nameof(CompanySetting), company.LegalName);
+        message = "Configuración guardada.";
+    }
+
+    private async Task UploadLogoAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        var extension = Path.GetExtension(file.Name).ToLowerInvariant();
+        if (extension is not (".png" or ".jpg" or ".jpeg" or ".webp")) { error = "El logo debe ser una imagen PNG, JPG o WEBP."; return; }
+        if (file.Size > 2_000_000) { error = "El logo no puede superar 2 MB."; return; }
+        var directory = Path.Combine(Environment.WebRootPath, "uploads", "logos");
+        Directory.CreateDirectory(directory);
+        var name = Guid.NewGuid().ToString("N") + extension;
+        await using (var stream = File.Create(Path.Combine(directory, name)))
+            await file.OpenReadStream(2_000_000).CopyToAsync(stream);
+        company.LogoPath = "/company/logo/" + name;
+        error = null;
+    }
+
+    private async Task RecordAuditAsync(string action, string entity, string detail)
+    {
+        var principal = await CurrentPrincipalAsync();
+        var userId = UserManager.GetUserId(principal) ?? "";
+        var userName = principal.Identity?.Name ?? "";
+        var roles = await UserManager.GetRolesAsync(await UserManager.GetUserAsync(principal) ?? new ApplicationUser());
+        await Audit.RecordAsync(userId, userName, string.Join(",", roles), action, entity, detail);
+    }
+
+    private async Task<System.Security.Claims.ClaimsPrincipal> CurrentPrincipalAsync() =>
+        (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+
+    private static void EnsureIdentity(IdentityResult result)
+    {
+        if (!result.Succeeded) throw new InvalidOperationException(string.Join("; ", result.Errors.Select(x => x.Description)));
+    }
+
+    private sealed class UserForm : System.ComponentModel.DataAnnotations.IValidatableObject
+    {
+        public string? Id { get; set; }
+        [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.EmailAddress]
+        public string Email { get; set; } = "";
+        public string PhoneNumber { get; set; } = "";
+        public string Password { get; set; } = "";
+
+        public IEnumerable<System.ComponentModel.DataAnnotations.ValidationResult> Validate(System.ComponentModel.DataAnnotations.ValidationContext validationContext)
+        {
+            if (Id is null && string.IsNullOrWhiteSpace(Password))
+                yield return new System.ComponentModel.DataAnnotations.ValidationResult("La contraseña inicial es obligatoria.", [nameof(Password)]);
+        }
+    }
+}

@@ -1,0 +1,160 @@
+@page "/crm"
+@attribute [Authorize(Roles = "AsesorComercial,DirectorComercial")]
+@inject ComercialService Service
+@inject AuthenticationStateProvider AuthStateProvider
+@inject UserManager<ApplicationUser> UserManager
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+
+<PageTitle>Gestión comercial</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">CRM INMOBILIARIO</span><h1>@(isDirector ? "Dirección comercial" : "Mi gestión comercial")</h1><p>@(isDirector ? "Vista global del equipo de asesores." : "Tu pipeline privado, citas y meta de comisiones.")</p></div><button class="btn btn-primary" @onclick="NewDeal">Nuevo prospecto</button></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+@if (isDirector)
+{
+    <div class="metric-grid mb-4"><article class="metric-card"><span>Total vendido</span><strong>@deals.Where(x => x.Stage == "Cierre").Sum(x => x.Value).ToString("C0")</strong><small>Negocios cerrados</small></article><article class="metric-card"><span>Negocios en pipeline</span><strong>@deals.Count(x => x.Stage != "Cierre")</strong><small>Contacto y negociación</small></article><article class="metric-card"><span>Tasa de cierre</span><strong>@(deals.Count == 0 ? "0.0%" : ((decimal)deals.Count(x => x.Stage == "Cierre") / deals.Count * 100).ToString("0.0") + "%")</strong><small>Negocios cerrados / total</small></article><article class="metric-card"><span>Proyección consolidada</span><strong>@deals.Where(x => x.Stage != "Cierre").Sum(x => x.Value).ToString("C0")</strong><small>Valor abierto en pipeline</small></article></div>
+    <div class="surface-card mb-4"><h2>Resultados por asesor</h2><div class="table-responsive"><table class="table"><thead><tr><th>Asesor</th><th>Total vendido</th><th>Pipeline</th><th>Cierres</th><th>Tasa de cierre</th></tr></thead><tbody>
+    @foreach (var metric in teamMetrics) { <tr><td>@(advisorNames.GetValueOrDefault(metric.AdvisorId, metric.AdvisorId))</td><td>@metric.Sold.ToString("C0")</td><td>@metric.Pipeline</td><td>@metric.Closed</td><td>@(metric.Total == 0 ? "0.0%" : ((decimal)metric.Closed / metric.Total * 100).ToString("0.0") + "%")</td></tr> }
+    </tbody></table></div></div>
+}
+else
+{
+    <div class="metric-grid mb-4"><article class="metric-card"><span>Mis prospectos</span><strong>@deals.Count</strong><small>Solo registros asignados a mi cuenta</small></article><article class="metric-card"><span>Negocios cerrados este mes</span><strong>@monthSold.ToString("C0")</strong><small>Valor comercial</small></article><article class="metric-card"><span>Comisión estimada</span><strong>@estimatedCommission.ToString("C0")</strong><small>@((company.CommissionRate * 100).ToString("0.##"))% de cierres del mes</small></article></div>
+    <div class="surface-card mb-4"><h2>Meta mensual de comisiones</h2><div class="progress" role="progressbar" aria-valuenow="@Math.Min(100, completionPercent)" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar" style="width:@($"{completionPercent:0.##}%")"></div></div><p class="mt-2 mb-0">@estimatedCommission.ToString("C0") de @company.MonthlyCommissionGoal.ToString("C0") · @completionPercent.ToString("0.0")%</p></div>
+    <div class="surface-card mb-4"><h2>Agenda de hoy</h2><ul class="mb-0">@foreach (var deal in deals.Where(x => x.NextAppointment?.Date == DateTime.Today).OrderBy(x => x.NextAppointment)) { <li>@deal.NextAppointment?.ToString("HH:mm") · @deal.Name — @deal.PropertyInterest</li> }@if (!deals.Any(x => x.NextAppointment?.Date == DateTime.Today)) { <li class="text-secondary">No hay citas programadas para hoy.</li> }</ul></div>
+}
+<div class="kanban-grid">
+    @foreach (var stage in stages)
+    {
+        var stageDeals = deals.Where(x => x.Stage == stage).ToList();
+        <section class="kanban-column"><header><h2>@stage</h2><span class="badge text-bg-light">@stageDeals.Count</span></header>
+            @foreach (var deal in stageDeals)
+            {
+                <article class="deal-card"><div class="d-flex justify-content-between gap-2"><strong>@deal.Name</strong><small>@deal.Value.ToString("C0")</small></div><p>@deal.PropertyInterest<br /><small>@deal.Phone</small></p>
+                    @if (isDirector) { <small class="text-secondary">@advisorNames.GetValueOrDefault(deal.AdvisorId, deal.AdvisorId)</small> }
+                    @if (deal.NextAppointment.HasValue) { <small class="d-block text-secondary">Cita: @deal.NextAppointment.Value.ToString("g")</small> }
+                    @if (!string.IsNullOrWhiteSpace(deal.DiscountRequest)) { <div class="mt-2 small">Descuento: @deal.DiscountRequest <StatusBadge Text="@deal.DiscountStatus" /></div> }
+                    <div class="d-flex flex-wrap gap-1 mt-2">
+                        @if (stage != "Contacto") { <button class="btn btn-sm btn-outline-secondary" title="Retroceder etapa" @onclick="() => ChangeStageAsync(deal, PreviousStage(stage))">←</button> }
+                        @if (stage != "Cierre") { <button class="btn btn-sm btn-outline-success" title="Avanzar etapa" @onclick="() => ChangeStageAsync(deal, NextStage(stage))">Avanzar →</button> }
+                        <button class="btn btn-sm btn-outline-primary" @onclick="() => EditDeal(deal)">Editar</button>
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenNotesAsync(deal)">Historial</button>
+                        @if (!isDirector) { <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteDealAsync(deal)">Eliminar</button> }
+                        @if (isDirector && stage == "Negociación" && deal.DiscountStatus == "Pendiente") { <button class="btn btn-sm btn-success" @onclick="() => DecideDiscountAsync(deal.Id, true)">Autorizar descuento</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DecideDiscountAsync(deal.Id, false)">Rechazar descuento</button> }
+                    </div>
+                </article>
+            }
+        </section>
+    }
+</div>
+<div class="surface-card mt-4"><h2>Maestro de prospectos</h2><div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Cliente</th><th>Asesor</th><th>Etapa</th><th>Valor</th><th>Próxima cita</th><th></th></tr></thead><tbody>
+@foreach (var deal in deals) { <tr><td>@deal.Name</td><td>@advisorNames.GetValueOrDefault(deal.AdvisorId, deal.AdvisorId)</td><td><StatusBadge Text="@deal.Stage" /></td><td>@deal.Value.ToString("C0")</td><td>@deal.NextAppointment?.ToString("g")</td><td>@if (isDirector) { <button class="btn btn-sm btn-outline-primary" @onclick="() => EditDeal(deal)">Reasignar / editar</button> }</td></tr> }
+</tbody></table></div></div>
+<ModalDialog IsOpen="showDeal" Title="@(dealForm.Id == 0 ? "Crear prospecto" : isDirector ? "Editar / reasignar prospecto" : "Editar prospecto")" OnClose="CloseDeal">
+    <EditForm Model="dealForm" OnValidSubmit="SaveDealAsync"><DataAnnotationsValidator /><ValidationSummary />
+        <div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Nombre del cliente</label><InputText class="form-control" @bind-Value="dealForm.Name" /></div>
+            <div class="col-md-6"><label class="form-label">Teléfono</label><InputText class="form-control" @bind-Value="dealForm.Phone" /></div>
+            <div class="col-md-6"><label class="form-label">Inmueble de interés</label><InputText class="form-control" @bind-Value="dealForm.PropertyInterest" /></div>
+            <div class="col-md-6"><label class="form-label">Valor del negocio</label><InputNumber class="form-control" min="0" @bind-Value="dealForm.Value" /></div>
+            <div class="col-md-6"><label class="form-label">Etapa</label><InputSelect class="form-select" @bind-Value="dealForm.Stage"><option>Contacto</option><option>Negociación</option><option>Cierre</option></InputSelect></div>
+            <div class="col-md-6"><label class="form-label">Próxima cita</label><InputDate class="form-control" @bind-Value="dealForm.NextAppointment" /></div>
+            @if (isDirector) { <div class="col-12"><label class="form-label">Reasignar a asesor</label><InputSelect class="form-select" @bind-Value="dealForm.AdvisorId">@foreach (var advisor in advisors) { <option value="@advisor.Id">@advisor.Email</option> }</InputSelect></div> }
+            @if (!isDirector && dealForm.Stage == "Negociación") { <div class="col-12"><label class="form-label">Solicitud de descuento especial</label><InputTextArea class="form-control" @bind-Value="dealForm.DiscountRequest" /></div> }
+        </div><button class="btn btn-primary mt-3">Guardar prospecto</button>
+    </EditForm>
+</ModalDialog>
+<ModalDialog IsOpen="showNotes" Title="@($"Seguimiento: {selectedDeal?.Name}")" OnClose="CloseNotes">
+    <div class="note-list">@foreach (var note in notes) { <article><small>@note.CreatedAtUtc.ToLocalTime().ToString("g")</small><p class="mb-0">@note.Text</p></article> }@if (notes.Count == 0) { <p class="text-secondary">Sin seguimientos registrados.</p> }</div>
+    <EditForm Model="noteForm" OnValidSubmit="AddNoteAsync"><label class="form-label mt-3">Agregar nota</label><InputTextArea class="form-control mb-2" @bind-Value="noteForm.Text" /><button class="btn btn-primary">Guardar seguimiento</button></EditForm>
+</ModalDialog>
+
+@code {
+    private readonly string[] stages = ["Contacto", "Negociación", "Cierre"];
+    private List<BusinessDeal> deals = [];
+    private List<AdvisorMetric> teamMetrics = [];
+    private List<ApplicationUser> advisors = [];
+    private Dictionary<string, string> advisorNames = [];
+    private List<CrmNote> notes = [];
+    private BusinessDeal dealForm = new();
+    private BusinessDeal? selectedDeal;
+    private NoteForm noteForm = new();
+    private CompanySetting company = new();
+    private string currentUserId = "";
+    private bool isDirector, showDeal, showNotes;
+    private decimal monthSold, estimatedCommission, completionPercent;
+    private string? message, error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+        currentUserId = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "";
+        isDirector = principal.IsInRole("DirectorComercial");
+        await LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        deals = await Service.DealsAsync(currentUserId, isDirector);
+        if (isDirector)
+        {
+            advisors = (await UserManager.GetUsersInRoleAsync("AsesorComercial")).ToList();
+            advisorNames = advisors.ToDictionary(x => x.Id, x => x.Email ?? x.Id);
+            teamMetrics = await Service.TeamMetricsAsync();
+        }
+        else
+        {
+            var start = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            monthSold = deals.Where(x => x.Stage == "Cierre" && x.ClosedAtUtc >= start).Sum(x => x.Value);
+            await using var db = await DbFactory.CreateDbContextAsync();
+            company = await db.CompanySettings.AsNoTracking().FirstOrDefaultAsync() ?? new CompanySetting();
+            estimatedCommission = monthSold * company.CommissionRate;
+            completionPercent = company.MonthlyCommissionGoal <= 0 ? 0 : Math.Min(100, estimatedCommission / company.MonthlyCommissionGoal * 100);
+        }
+    }
+    private void NewDeal()
+    {
+        dealForm = new BusinessDeal { Stage = "Contacto", AdvisorId = currentUserId, NextAppointment = DateTime.Today.AddDays(1) };
+        showDeal = true; error = null;
+    }
+    private void EditDeal(BusinessDeal deal)
+    {
+        dealForm = new BusinessDeal { Id = deal.Id, Name = deal.Name, Phone = deal.Phone, PropertyInterest = deal.PropertyInterest, Value = deal.Value, NextAppointment = deal.NextAppointment, Stage = deal.Stage, AdvisorId = deal.AdvisorId, DiscountRequest = deal.DiscountRequest, DiscountStatus = deal.DiscountStatus };
+        showDeal = true; error = null;
+    }
+    private Task CloseDeal() { showDeal = false; return Task.CompletedTask; }
+    private async Task SaveDealAsync()
+    {
+        try { var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User; await Service.SaveDealAsync(dealForm, currentUserId, isDirector, currentUserId, principal.Identity?.Name ?? ""); showDeal = false; message = "Prospecto guardado."; await LoadAsync(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { error = ex.Message; }
+    }
+    private async Task ChangeStageAsync(BusinessDeal deal, string stage)
+    {
+        try { var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User; await Service.SetStageAsync(deal.Id, stage, currentUserId, isDirector, currentUserId, principal.Identity?.Name ?? ""); await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task DeleteDealAsync(BusinessDeal deal)
+    {
+        try { var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User; await Service.DeleteDealAsync(deal.Id, currentUserId, currentUserId, principal.Identity?.Name ?? ""); message = "Prospecto eliminado."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task OpenNotesAsync(BusinessDeal deal)
+    {
+        selectedDeal = deal; notes = await Service.NotesAsync(deal.Id, currentUserId, isDirector); noteForm = new(); showNotes = true;
+    }
+    private Task CloseNotes() { showNotes = false; return Task.CompletedTask; }
+    private async Task AddNoteAsync()
+    {
+        if (selectedDeal is null) return;
+        var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+        await Service.AddNoteAsync(selectedDeal.Id, noteForm.Text, currentUserId, isDirector, currentUserId, principal.Identity?.Name ?? "");
+        notes = await Service.NotesAsync(selectedDeal.Id, currentUserId, isDirector);
+        noteForm = new(); message = "Seguimiento guardado.";
+    }
+    private async Task DecideDiscountAsync(int id, bool approve)
+    {
+        try { var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User; await Service.DecideDiscountAsync(id, approve, currentUserId, principal.Identity?.Name ?? ""); message = approve ? "Descuento autorizado." : "Solicitud de descuento rechazada."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private static string NextStage(string stage) => stage == "Contacto" ? "Negociación" : "Cierre";
+    private static string PreviousStage(string stage) => stage == "Cierre" ? "Negociación" : "Contacto";
+    private sealed class NoteForm { [System.ComponentModel.DataAnnotations.Required] public string Text { get; set; } = ""; }
+}

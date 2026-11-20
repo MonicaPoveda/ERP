@@ -1,0 +1,66 @@
+@implements IDisposable
+
+<div class="brand-block">
+    <div class="brand-mark">AE</div>
+    <div><strong>Arias Empire</strong><small>ERP empresarial</small></div>
+</div>
+<nav class="nav flex-column sidebar-nav">
+    <AuthorizeView>
+        <Authorized>
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">⌂ <span>Resumen</span></NavLink>
+        </Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="SuperAdmin">
+        <Authorized><NavLink class="nav-link" href="administracion">⚙ <span>Administración y seguridad</span></NavLink></Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="CoordinadorProveedores">
+        <Authorized><NavLink class="nav-link" href="proveedores">▤ <span>Proveedores</span></NavLink></Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="Tesorero">
+        <Authorized><NavLink class="nav-link" href="finanzas">＄ <span>Finanzas</span></NavLink></Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="RRHH">
+        <Authorized><NavLink class="nav-link" href="rrhh">♙ <span>Talento humano</span></NavLink></Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="Almacenista">
+        <Authorized><NavLink class="nav-link" href="inventario">▦ <span>Inventario</span></NavLink></Authorized>
+    </AuthorizeView>
+    <AuthorizeView Roles="AsesorComercial,DirectorComercial">
+        <Authorized><NavLink class="nav-link" href="crm">◎ <span>Gestión comercial</span></NavLink></Authorized>
+    </AuthorizeView>
+</nav>
+<div class="sidebar-user">
+    <AuthorizeView>
+        <Authorized>
+            <span class="user-email">@context.User.Identity?.Name</span>
+            <form action="Account/Logout" method="post">
+                <AntiforgeryToken />
+                <input type="hidden" name="ReturnUrl" value="@currentUrl" />
+                <button type="submit" class="btn btn-sm btn-outline-light w-100">Cerrar sesión</button>
+            </form>
+        </Authorized>
+        <NotAuthorized>
+            <a class="btn btn-sm btn-primary w-100" href="Account/Login">Iniciar sesión</a>
+        </NotAuthorized>
+    </AuthorizeView>
+</div>
+
+@code {
+    private string? currentUrl;
+
+    protected override void OnInitialized()
+    {
+        currentUrl = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        NavigationManager.LocationChanged += OnLocationChanged;
+    }
+
+    [Inject] private NavigationManager NavigationManager { get; set; } = default!;
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        currentUrl = NavigationManager.ToBaseRelativePath(e.Location);
+        StateHasChanged();
+    }
+
+    public void Dispose() => NavigationManager.LocationChanged -= OnLocationChanged;
+}

@@ -1,0 +1,12 @@
+<span class="badge rounded-pill @CssClass">@Text</span>
+
+@code {
+    [Parameter] public string Text { get; set; } = "";
+    private string CssClass => Text.ToLowerInvariant() switch
+    {
+        "aprobada" or "aprobado" or "cierre" or "activa" => "text-bg-success",
+        "pendiente" or "negociación" => "text-bg-warning",
+        "rechazada" or "rechazado" or "bloqueado" => "text-bg-danger",
+        _ => "text-bg-secondary"
+    };
+}

@@ -1,0 +1,90 @@
+@page "/proveedores"
+@attribute [Authorize(Roles = "CoordinadorProveedores")]
+@inject ProveedoresService Service
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Proveedores</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">OPERACIONES</span><h1>Proveedores</h1><p>Directorio, evaluación de servicio e historial.</p></div><button class="btn btn-primary" @onclick="NewSupplier">Nuevo proveedor</button></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+<div class="metric-grid mb-4">
+    <article class="metric-card"><span>Proveedores activos</span><strong>@suppliers.Count</strong><small>Directorio vigente</small></article>
+    <article class="metric-card"><span>Evaluaciones pendientes</span><strong>@suppliers.Count(x => x.EvaluationCount == 0)</strong><small>Sin servicios calificados</small></article>
+    <article class="metric-card"><span>Puntaje bajo</span><strong>@suppliers.Count(x => x.EvaluationCount > 0 && x.AverageScore < 3)</strong><small>Promedio menor a 3</small></article>
+</div>
+<div class="surface-card">
+    <div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th>Proveedor</th><th>RUT / NIT</th><th>Contacto</th><th>Servicios</th><th>Promedio</th><th>Historial</th><th></th></tr></thead><tbody>
+    @foreach (var supplier in suppliers)
+    {
+        <tr><td><strong>@supplier.LegalName</strong><br /><small>@supplier.Email</small></td><td>@supplier.TaxId</td><td>@supplier.ContactName<br />@supplier.Phone</td><td>@supplier.Services</td><td>@(supplier.EvaluationCount == 0 ? "Sin evaluar" : $"{supplier.AverageScore:0.00} / 5") (@supplier.EvaluationCount)</td><td><details><summary>Ver servicios</summary><ul class="mt-2 mb-0">@foreach (var evaluation in supplier.Evaluations.OrderByDescending(x => x.EvaluatedAtUtc)) { <li>@evaluation.EvaluatedAtUtc.ToLocalTime().ToString("d") · @evaluation.Score/5 · @evaluation.Observation</li> }</ul></details></td>
+        <td><div class="d-flex gap-1"><button class="btn btn-sm btn-outline-primary" @onclick="() => EditSupplier(supplier)">Editar</button><button class="btn btn-sm btn-outline-success" @onclick="() => OpenEvaluation(supplier)">Evaluar</button><button class="btn btn-sm btn-outline-danger" @onclick="() => AskDelete(supplier)">Eliminar</button></div></td></tr>
+    }
+    </tbody></table></div>
+</div>
+<ModalDialog IsOpen="showSupplier" Title="@(form.Id == 0 ? "Crear proveedor" : "Editar proveedor")" OnClose="CloseSupplier">
+    <EditForm Model="form" OnValidSubmit="SaveSupplierAsync"><DataAnnotationsValidator /><ValidationSummary />
+        <div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Razón social</label><InputText class="form-control" @bind-Value="form.LegalName" /></div>
+            <div class="col-md-6"><label class="form-label">RUT / NIT</label><InputText class="form-control" @bind-Value="form.TaxId" /></div>
+            <div class="col-md-6"><label class="form-label">Contacto</label><InputText class="form-control" @bind-Value="form.ContactName" /></div>
+            <div class="col-md-6"><label class="form-label">Teléfono</label><InputText class="form-control" @bind-Value="form.Phone" /></div>
+            <div class="col-md-6"><label class="form-label">Correo</label><InputText class="form-control" @bind-Value="form.Email" /></div>
+            <div class="col-md-6"><label class="form-label">Servicios ofrecidos</label><InputText class="form-control" @bind-Value="form.Services" /></div>
+        </div><button class="btn btn-primary mt-3">Guardar proveedor</button>
+    </EditForm>
+</ModalDialog>
+<ModalDialog IsOpen="showEvaluation" Title="@($"Evaluar {evaluationSupplier?.LegalName}")" OnClose="CloseEvaluation">
+    <EditForm Model="evaluation" OnValidSubmit="SaveEvaluationAsync"><DataAnnotationsValidator />
+        <div class="mb-3"><label class="form-label">Puntaje (1 a 5)</label><InputNumber class="form-control" min="1" max="5" @bind-Value="evaluation.Score" /></div>
+        <div class="mb-3"><label class="form-label">Observaciones del servicio</label><InputTextArea class="form-control" @bind-Value="evaluation.Observation" /></div>
+        <button class="btn btn-primary">Registrar evaluación</button>
+    </EditForm>
+</ModalDialog>
+<ConfirmDialog IsOpen="showDelete" Title="Eliminar proveedor" Message="@($"¿Eliminar {deleteCandidate?.LegalName} y su historial de evaluaciones?")" OnCancel="CancelDelete" OnConfirm="DeleteSupplierAsync" />
+
+@code {
+    private List<Supplier> suppliers = [];
+    private Supplier form = new();
+    private EvaluationForm evaluation = new();
+    private Supplier? evaluationSupplier, deleteCandidate;
+    private bool showSupplier, showEvaluation, showDelete;
+    private string? message, error;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync() => suppliers = await Service.ListAsync();
+    private void NewSupplier() { form = new Supplier(); showSupplier = true; error = null; }
+    private void EditSupplier(Supplier supplier) { form = new Supplier { Id = supplier.Id, LegalName = supplier.LegalName, TaxId = supplier.TaxId, ContactName = supplier.ContactName, Phone = supplier.Phone, Email = supplier.Email, Services = supplier.Services }; showSupplier = true; }
+    private Task CloseSupplier() { showSupplier = false; return Task.CompletedTask; }
+    private void OpenEvaluation(Supplier supplier) { evaluationSupplier = supplier; evaluation = new EvaluationForm(); showEvaluation = true; }
+    private Task CloseEvaluation() { showEvaluation = false; return Task.CompletedTask; }
+    private void AskDelete(Supplier supplier) { deleteCandidate = supplier; showDelete = true; }
+    private Task CancelDelete() { showDelete = false; return Task.CompletedTask; }
+
+    private async Task SaveSupplierAsync()
+    {
+        try { var (id, name) = await CurrentUserAsync(); await Service.SaveAsync(form, id, name); showSupplier = false; message = "Proveedor guardado."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task SaveEvaluationAsync()
+    {
+        try { var (id, name) = await CurrentUserAsync(); await Service.EvaluateAsync(evaluationSupplier!.Id, evaluation.Score, evaluation.Observation, id, name); showEvaluation = false; message = "Evaluación guardada y promedio recalculado."; await LoadAsync(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException) { error = ex.Message; }
+    }
+    private async Task DeleteSupplierAsync()
+    {
+        if (deleteCandidate is null) return;
+        var (id, name) = await CurrentUserAsync();
+        await Service.DeleteAsync(deleteCandidate.Id, id, name);
+        showDelete = false; message = "Proveedor eliminado."; await LoadAsync();
+    }
+    private async Task<(string Id, string Name)> CurrentUserAsync()
+    {
+        var principal = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+        return (principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "", principal.Identity?.Name ?? "");
+    }
+    private sealed class EvaluationForm
+    {
+        [System.ComponentModel.DataAnnotations.Range(1, 5)] public int Score { get; set; } = 5;
+        [System.ComponentModel.DataAnnotations.Required] public string Observation { get; set; } = "";
+    }
+}

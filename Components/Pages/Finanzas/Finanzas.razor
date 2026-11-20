@@ -1,0 +1,182 @@
+@page "/finanzas"
+@attribute [Authorize(Roles = "Tesorero")]
+@inject FinanzasService Service
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Finanzas</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">FINANZAS Y TRANSACCIONES</span><h1>Panel financiero</h1><p>Facturación, recaudos, egresos y órdenes de compra.</p></div></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+@if (!string.IsNullOrEmpty(receiptUrl)) { <div class="alert alert-success">Transacción registrada. <a class="alert-link" href="@receiptUrl">Descargar comprobante PDF</a></div> }
+<div class="metric-grid mb-4"><article class="metric-card"><span>Cuentas por cobrar</span><strong>@summary.Receivable.ToString("C0")</strong><small>Saldo de facturas</small></article><article class="metric-card"><span>Cuentas por pagar</span><strong>@summary.Payable.ToString("C0")</strong><small>Gastos aprobados</small></article><article class="metric-card"><span>Flujo neto registrado</span><strong>@summary.NetCash.ToString("C0")</strong><small>Recaudos menos gastos aprobados</small></article></div>
+<div class="surface-card mb-4">
+    <h2>Negocios cerrados · facturación</h2>
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Cliente</th><th>Inmueble</th><th>Valor negocio</th><th></th></tr></thead><tbody>
+    @foreach (var deal in closedDeals) { <tr><td>@deal.Name</td><td>@deal.PropertyInterest</td><td>@deal.Value.ToString("C0")</td><td><button class="btn btn-sm btn-primary" @onclick="() => CreateInvoiceAsync(deal.Id)">Emitir factura electrónica</button></td></tr> }
+    @if (closedDeals.Count == 0) { <tr><td colspan="4" class="text-secondary">No hay negocios cerrados sin facturar.</td></tr> }
+    </tbody></table></div>
+</div>
+<div class="surface-card mb-4">
+    <h2>Facturas y recaudos</h2>
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Consecutivo</th><th>Negocio</th><th>Subtotal</th><th>IVA 19%</th><th>Retención</th><th>Total neto</th><th>Saldo</th><th>Acciones</th></tr></thead><tbody>
+    @foreach (var invoice in invoices) { <tr><td>@invoice.Number</td><td>@invoice.BusinessDeal?.Name</td><td>@invoice.Subtotal.ToString("C0")</td><td>@invoice.Vat.ToString("C0")</td><td>@invoice.Withholding.ToString("C0")</td><td>@invoice.Total.ToString("C0")</td><td>@invoice.Balance.ToString("C0")</td><td><div class="d-flex gap-1"><a class="btn btn-sm btn-outline-secondary" href="@($"/documentos/facturas/{invoice.Id}/pdf")">Factura PDF</a><button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => SelectInvoice(invoice.Id)">Pago / nota</button></div></td></tr> }
+    </tbody></table></div>
+    @if (selectedInvoiceId.HasValue)
+    {
+        <div class="border rounded p-3 mt-3 bg-light">
+            <h3 class="h6">Registrar movimiento de factura</h3>
+            <EditForm Model="invoiceAction" OnValidSubmit="SaveInvoiceActionAsync"><DataAnnotationsValidator /><ValidationSummary class="text-danger" /><div class="row g-2 align-items-end">
+                <div class="col-md-3"><label class="form-label">Tipo</label><InputSelect class="form-select" @bind-Value="invoiceAction.Type"><option>Pago recibido</option><option>Nota crédito</option><option>Nota débito</option></InputSelect></div>
+                <div class="col-md-3"><label class="form-label">Valor</label><InputNumber class="form-control" min="0.01" step="0.01" @bind-Value="invoiceAction.Amount" /><ValidationMessage For="() => invoiceAction.Amount" class="text-danger" /></div>
+                <div class="col-md-4"><label class="form-label">Detalle</label><InputText class="form-control" @bind-Value="invoiceAction.Detail" /></div>
+                <div class="col-md-2"><button type="submit" class="btn btn-primary w-100">Registrar movimiento</button></div>
+            </div></EditForm>
+        </div>
+    }
+</div>
+<div class="row g-4 mb-4">
+    <div class="col-lg-7"><div class="surface-card h-100"><div class="d-flex justify-content-between align-items-center"><h2>Solicitudes de gasto</h2><button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => showExpenseForm = !showExpenseForm">Nueva solicitud</button></div>
+    @if (showExpenseForm) { <EditForm Model="expenseForm" OnValidSubmit="CreateExpenseAsync"><div class="row g-2 mb-3"><div class="col"><InputText class="form-control" placeholder="Descripción" @bind-Value="expenseForm.Description" /></div><div class="col-3"><InputNumber class="form-control" min="0.01" @bind-Value="expenseForm.Amount" /></div><div class="col-auto"><button class="btn btn-primary">Registrar</button></div></div></EditForm> }
+    <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Descripción</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Estado / acciones</th></tr></thead><tbody>
+    @foreach (var expense in expenses) { <tr><td>@expense.Description</td><td>@expense.Amount.ToString("C0")</td><td>@expense.PaidAmount.ToString("C0")</td><td>@((expense.Amount - expense.PaidAmount).ToString("C0"))</td><td><StatusBadge Text="@expense.Status" /> @if (expense.Status == "Pendiente") { <button type="button" class="btn btn-sm btn-success ms-1" @onclick="() => ReviewExpenseAsync(expense.Id, true)">Aprobar</button><button type="button" class="btn btn-sm btn-outline-danger ms-1" @onclick="() => ReviewExpenseAsync(expense.Id, false)">Rechazar</button> } else if (expense.Status is "Aprobada" or "Pago parcial") { <button type="button" class="btn btn-sm btn-primary ms-1" @onclick="() => OpenExpensePayment(expense)">Registrar pago</button> }</td></tr> }
+    </tbody></table></div></div></div>
+    <div class="col-lg-5"><div class="surface-card h-100"><h2>Orden de compra</h2><EditForm Model="purchaseForm" OnValidSubmit="CreatePurchaseOrderAsync"><DataAnnotationsValidator />
+        <div class="mb-3"><label class="form-label">Descripción</label><InputText class="form-control" @bind-Value="purchaseForm.Description" /></div>
+        <div class="mb-3"><label class="form-label">Valor</label><InputNumber class="form-control" @bind-Value="purchaseForm.Amount" /></div>
+        <button class="btn btn-primary">Emitir orden aprobada</button>
+    </EditForm>
+    <p class="small text-secondary mt-3">Las entradas de almacén requieren el consecutivo de una orden aprobada.</p>
+    </div></div>
+</div>
+@if (selectedExpense is not null)
+{
+    <div class="surface-card mb-4">
+        <h2>Registrar pago de egreso: @selectedExpense.Description</h2>
+        <p>Saldo pendiente: <strong>@((selectedExpense.Amount - selectedExpense.PaidAmount).ToString("C2"))</strong></p>
+        <EditForm Model="expensePaymentForm" OnValidSubmit="SaveExpensePaymentAsync">
+            <DataAnnotationsValidator />
+            <ValidationSummary class="text-danger" />
+            <div class="row g-2 align-items-end">
+                <div class="col-md-4"><label class="form-label">Valor pagado</label><InputNumber class="form-control" min="0.01" step="0.01" @bind-Value="expensePaymentForm.Amount" /><ValidationMessage For="() => expensePaymentForm.Amount" class="text-danger" /></div>
+                <div class="col-md-5"><label class="form-label">Referencia bancaria / soporte</label><InputText class="form-control" @bind-Value="expensePaymentForm.Reference" /></div>
+                <div class="col-auto"><button type="submit" class="btn btn-primary">Registrar y generar recibo</button><button type="button" class="btn btn-outline-secondary ms-2" @onclick="CancelExpensePayment">Cancelar</button></div>
+            </div>
+        </EditForm>
+    </div>
+}
+<div class="surface-card"><h2>Órdenes emitidas</h2><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Consecutivo</th><th>Descripción</th><th>Valor</th><th>Estado</th></tr></thead><tbody>@foreach (var order in orders) { <tr><td>@order.Number</td><td>@order.Description</td><td>@order.Amount.ToString("C0")</td><td>@order.Status</td></tr> }</tbody></table></div></div>
+<div class="surface-card mt-4">
+    <h2>Historial de recibos</h2>
+    <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Fecha</th><th>Tipo</th><th>Factura</th><th>Valor</th><th>PDF</th></tr></thead><tbody>
+        @foreach (var payment in invoicePayments) { <tr><td>@payment.PaidAtUtc.ToLocalTime().ToString("g")</td><td>Pago recibido</td><td>@payment.Invoice?.Number</td><td>@payment.Amount.ToString("C2")</td><td><a href="@($"/documentos/pagos-factura/{payment.Id}/pdf")">Descargar recibo</a></td></tr> }
+        @foreach (var adjustment in invoiceAdjustments) { <tr><td>@adjustment.CreatedAtUtc.ToLocalTime().ToString("g")</td><td>@adjustment.Type</td><td>@adjustment.Invoice?.Number</td><td>@adjustment.Amount.ToString("C2")</td><td><a href="@($"/documentos/notas-factura/{adjustment.Id}/pdf")">Descargar nota</a></td></tr> }
+    </tbody></table></div>
+</div>
+
+@code {
+    private FinanceSummary summary = new(0, 0, 0);
+    private List<BusinessDeal> closedDeals = [];
+    private List<Invoice> invoices = [];
+    private List<ExpenseRequest> expenses = [];
+    private List<PurchaseOrder> orders = [];
+    private List<InvoicePayment> invoicePayments = [];
+    private List<InvoiceAdjustment> invoiceAdjustments = [];
+    private ExpenseRequest? selectedExpense;
+    private int? selectedInvoiceId;
+    private InvoiceActionForm invoiceAction = new();
+    private ExpensePaymentForm expensePaymentForm = new();
+    private ExpenseForm expenseForm = new();
+    private PurchaseForm purchaseForm = new();
+    private bool showExpenseForm;
+    private string? message, error, receiptUrl;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        summary = await Service.SummaryAsync();
+        closedDeals = await Service.ClosedDealsAsync();
+        invoices = await Service.InvoicesAsync();
+        expenses = await Service.ExpensesAsync();
+        invoicePayments = await Service.InvoicePaymentsAsync();
+        invoiceAdjustments = await Service.InvoiceAdjustmentsAsync();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        orders = await db.PurchaseOrders.AsNoTracking().OrderByDescending(x => x.Id).ToListAsync();
+    }
+    [Inject] private IDbContextFactory<ApplicationDbContext> DbFactory { get; set; } = default!;
+    private void SelectInvoice(int id) { selectedInvoiceId = id; invoiceAction = new(); }
+    private async Task CreateInvoiceAsync(int id)
+    {
+        try { var (uid, name) = await CurrentUserAsync(); var invoice = await Service.CreateInvoiceAsync(id, uid, name); message = $"Factura {invoice.Number} emitida."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task SaveInvoiceActionAsync()
+    {
+        if (!selectedInvoiceId.HasValue) return;
+        try
+        {
+            var (uid, name) = await CurrentUserAsync();
+            if (invoiceAction.Type == "Pago recibido")
+            {
+                var payment = await Service.RegisterPaymentAsync(selectedInvoiceId.Value, invoiceAction.Amount, uid, name);
+                receiptUrl = $"/documentos/pagos-factura/{payment.Id}/pdf";
+            }
+            else
+            {
+                var adjustment = await Service.CreateAdjustmentAsync(selectedInvoiceId.Value, invoiceAction.Type, invoiceAction.Amount, invoiceAction.Detail, uid, name);
+                receiptUrl = $"/documentos/notas-factura/{adjustment.Id}/pdf";
+            }
+            selectedInvoiceId = null; message = "Movimiento registrado."; await LoadAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException or ArgumentException) { error = ex.Message; }
+    }
+    private async Task ReviewExpenseAsync(int id, bool approve)
+    {
+        try { var (uid, name) = await CurrentUserAsync(); await Service.ReviewExpenseAsync(id, approve, uid, name); message = "Solicitud actualizada."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task CreatePurchaseOrderAsync()
+    {
+        try { var (uid, name) = await CurrentUserAsync(); var order = await Service.CreatePurchaseOrderAsync(purchaseForm.Description, purchaseForm.Amount, uid, name); message = $"Orden {order.Number} creada."; purchaseForm = new(); await LoadAsync(); }
+        catch (ArgumentOutOfRangeException ex) { error = ex.Message; }
+    }
+    private async Task CreateExpenseAsync()
+    {
+        if (expenseForm.Amount <= 0 || string.IsNullOrWhiteSpace(expenseForm.Description)) { error = "Ingrese descripción y un valor mayor a cero."; return; }
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.ExpenseRequests.Add(new ExpenseRequest { Description = expenseForm.Description, Amount = expenseForm.Amount });
+        await db.SaveChangesAsync();
+        var (uid, name) = await CurrentUserAsync(); await AuditSvc.RecordAsync(uid, name, "Tesorero", "Crear", nameof(ExpenseRequest), expenseForm.Description);
+        expenseForm = new(); showExpenseForm = false; message = "Solicitud de gasto registrada."; await LoadAsync();
+    }
+    private void OpenExpensePayment(ExpenseRequest expense)
+    {
+        selectedExpense = expense;
+        expensePaymentForm = new ExpensePaymentForm { Amount = Math.Max(0.01m, expense.Amount - expense.PaidAmount) };
+        error = null;
+    }
+    private void CancelExpensePayment() => selectedExpense = null;
+    private async Task SaveExpensePaymentAsync()
+    {
+        if (selectedExpense is null) return;
+        try
+        {
+            var (uid, name) = await CurrentUserAsync();
+            var payment = await Service.RegisterExpensePaymentAsync(selectedExpense.Id, expensePaymentForm.Amount, uid, name);
+            receiptUrl = $"/documentos/pagos-egreso/{payment.Id}/pdf";
+            selectedExpense = null;
+            message = "Pago registrado. El recibo está disponible en PDF.";
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException or ArgumentException) { error = ex.Message; }
+    }
+    [Inject] private AuditService AuditSvc { get; set; } = default!;
+    private async Task<(string Id, string Name)> CurrentUserAsync()
+    {
+        var user = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+        return (user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "", user.Identity?.Name ?? "");
+    }
+    private sealed class InvoiceActionForm { public string Type { get; set; } = "Pago recibido"; [System.ComponentModel.DataAnnotations.Range(typeof(decimal), "0.01", "999999999")] public decimal Amount { get; set; } public string Detail { get; set; } = ""; }
+    private sealed class ExpensePaymentForm { [System.ComponentModel.DataAnnotations.Range(typeof(decimal), "0.01", "999999999")] public decimal Amount { get; set; } [System.ComponentModel.DataAnnotations.Required] public string Reference { get; set; } = ""; }
+    private sealed class ExpenseForm { public string Description { get; set; } = ""; public decimal Amount { get; set; } }
+    private sealed class PurchaseForm { public string Description { get; set; } = ""; public decimal Amount { get; set; } }
+}

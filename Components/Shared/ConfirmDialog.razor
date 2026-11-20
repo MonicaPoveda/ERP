@@ -1,0 +1,17 @@
+<ModalDialog IsOpen="IsOpen" Title="@Title" OnClose="CancelAsync">
+    <p>@Message</p>
+    <div class="d-flex justify-content-end gap-2">
+        <button type="button" class="btn btn-outline-secondary" @onclick="CancelAsync">Cancelar</button>
+        <button type="button" class="btn btn-danger" @onclick="ConfirmAsync">Confirmar</button>
+    </div>
+</ModalDialog>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string Title { get; set; } = "Confirmar acción";
+    [Parameter] public string Message { get; set; } = "¿Desea continuar?";
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private Task ConfirmAsync() => OnConfirm.InvokeAsync();
+    private Task CancelAsync() => OnCancel.InvokeAsync();
+}

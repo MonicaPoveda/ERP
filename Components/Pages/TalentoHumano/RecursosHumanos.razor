@@ -1,0 +1,154 @@
+@page "/rrhh"
+@attribute [Authorize(Roles = "RRHH")]
+@inject RrhhService Service
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IWebHostEnvironment Environment
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject AuditService Audit
+
+<PageTitle>Talento humano</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">TALENTO HUMANO</span><h1>Recursos humanos</h1><p>Gestión de personas, novedades y preliquidación.</p></div><button class="btn btn-primary" @onclick="NewEmployee">Registrar empleado</button></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+@if (!string.IsNullOrEmpty(payrollReceiptUrl)) { <div class="alert alert-success">Pago registrado. <a class="alert-link" href="@payrollReceiptUrl">Descargar comprobante de nómina PDF</a></div> }
+<div class="metric-grid mb-4"><article class="metric-card"><span>Cumpleaños del mes</span><strong>@birthdays.Count</strong><small>@DateTime.Today.ToString("MMMM yyyy")</small></article><article class="metric-card"><span>Contratos por vencer</span><strong>@contractAlerts.Count</strong><small>Próximos 30 días</small></article><article class="metric-card"><span>Novedades pendientes</span><strong>@requests.Count(x => x.Status == "Pendiente")</strong><small>Vacaciones e incapacidades</small></article></div>
+<div class="surface-card mb-4"><h2>Empleados</h2><div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th>Empleado</th><th>Cédula</th><th>Cargo</th><th>Salario base</th><th>Vencimiento contrato</th><th>Contrato PDF</th><th>Estado / acciones</th></tr></thead><tbody>
+@foreach (var employee in employees)
+{
+    <tr><td>@employee.FullName</td><td>@employee.NationalId</td><td>@employee.Position</td><td>@employee.BaseSalary.ToString("C0")</td><td>@employee.ContractEndDate.ToString("d")</td><td>@if (!string.IsNullOrWhiteSpace(employee.ContractPath)) { <a href="@($"/rrhh/contracts/{Uri.EscapeDataString(employee.ContractPath)}")">Descargar</a> } else { <span class="text-secondary">Sin archivo</span> }</td><td><StatusBadge Text="@(employee.IsActive ? "Activo" : "Inactivo")" /> <button class="btn btn-sm btn-outline-primary ms-1" @onclick="() => EditEmployee(employee)">Editar</button>@if (employee.IsActive) { <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => DeactivateAsync(employee.Id)">Dar de baja</button> }</td></tr>
+}
+</tbody></table></div></div>
+<div class="row g-4 mb-4">
+    <div class="col-lg-7"><div class="surface-card h-100"><div class="d-flex justify-content-between align-items-center"><h2>Novedades de personal</h2><button class="btn btn-sm btn-outline-primary" @onclick="() => showRequest = !showRequest">Nueva solicitud</button></div>
+    @if (showRequest) { <EditForm Model="requestForm" OnValidSubmit="CreateRequestAsync"><div class="row g-2 mb-3"><div class="col-md-4"><InputSelect class="form-select" @bind-Value="requestForm.EmployeeId">@foreach (var employee in employees.Where(x => x.IsActive)) { <option value="@employee.Id">@employee.FullName</option> }</InputSelect></div><div class="col-md-3"><InputSelect class="form-select" @bind-Value="requestForm.Type"><option>Vacaciones</option><option>Incapacidad</option></InputSelect></div><div class="col-md-2"><InputDate class="form-control" @bind-Value="requestForm.StartDate" /></div><div class="col-md-2"><InputDate class="form-control" @bind-Value="requestForm.EndDate" /></div><div class="col-md-1"><button class="btn btn-primary">+</button></div></div></EditForm> }
+    <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Empleado</th><th>Tipo</th><th>Fechas</th><th>Estado</th><th></th></tr></thead><tbody>
+    @foreach (var request in requests) { <tr><td>@request.Employee?.FullName</td><td>@request.Type</td><td>@request.StartDate.ToString("d") – @request.EndDate.ToString("d")</td><td><StatusBadge Text="@request.Status" /></td><td>@if (request.Status == "Pendiente") { <button class="btn btn-sm btn-success me-1" @onclick="() => ReviewRequestAsync(request.Id, true)">Aprobar</button><button class="btn btn-sm btn-outline-danger" @onclick="() => ReviewRequestAsync(request.Id, false)">Denegar</button> }</td></tr> }
+    </tbody></table></div></div></div>
+    <div class="col-lg-5"><div class="surface-card h-100"><h2>Preliquidación de nómina</h2><EditForm Model="payrollForm" OnValidSubmit="CalculatePayrollAsync">
+        <div class="mb-3"><label class="form-label">Empleado</label><InputSelect class="form-select" @bind-Value="payrollForm.EmployeeId">@foreach (var employee in employees.Where(x => x.IsActive)) { <option value="@employee.Id">@employee.FullName · @employee.BaseSalary.ToString("C0")</option> }</InputSelect></div>
+        <div class="mb-3"><label class="form-label">Periodo</label><InputSelect class="form-select" @bind-Value="payrollForm.PeriodDays"><option value="15">Quincenal (15 días)</option><option value="30">Mensual (30 días)</option></InputSelect></div>
+        <div class="mb-3"><label class="form-label">Inicio del periodo</label><InputDate class="form-control" @bind-Value="payrollForm.PeriodStart" /></div>
+        <div class="mb-3"><label class="form-label">Días trabajados</label><InputNumber class="form-control" min="0" max="@payrollForm.PeriodDays" @bind-Value="payrollForm.DaysWorked" /></div>
+        <button class="btn btn-primary">Calcular preliquidación</button>
+    </EditForm>
+    @if (payrollResult is not null)
+    {
+        <div class="alert alert-success mt-3">
+            Devengado: <strong>@payrollResult.GrossAmount.ToString("C2")</strong><br />
+            Incapacidades descontadas: @payrollResult.IncapacityDays días · @payrollResult.DeductionAmount.ToString("C2")<br />
+            Neto a pagar: <strong>@payrollResult.NetAmount.ToString("C2")</strong>
+            <button type="button" class="btn btn-success mt-2" @onclick="RegisterPayrollPaymentAsync">Registrar pago y generar recibo</button>
+        </div>
+    }
+    <h3 class="h6 mt-4">Vencimientos cercanos</h3><ul class="mb-0">@foreach (var employee in contractAlerts) { <li>@employee.FullName — @employee.ContractEndDate.ToString("d")</li> }</ul>
+    </div></div>
+</div>
+<div class="surface-card"><h2>Cumpleaños de este mes</h2><p>@(birthdays.Count == 0 ? "No hay cumpleaños este mes." : string.Join(", ", birthdays.Select(x => $"{x.FullName} ({x.BirthDate:dd})")))</p></div>
+<div class="surface-card mt-4"><h2>Historial de pagos de nómina</h2>
+    <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Fecha de pago</th><th>Empleado</th><th>Periodo</th><th>Días trabajados</th><th>Neto pagado</th><th>Comprobante</th></tr></thead><tbody>
+    @foreach (var payment in payrollPayments) { <tr><td>@payment.PaidAtUtc.ToLocalTime().ToString("g")</td><td>@payment.Employee?.FullName</td><td>@payment.PeriodStart.ToString("d") · @payment.PeriodDays días</td><td>@payment.DaysWorked</td><td>@payment.NetAmount.ToString("C2")</td><td><a href="@($"/documentos/pagos-nomina/{payment.Id}/pdf")">Descargar PDF</a></td></tr> }
+    @if (payrollPayments.Count == 0) { <tr><td colspan="6" class="text-secondary">Aún no se han registrado pagos de nómina.</td></tr> }
+    </tbody></table></div>
+</div>
+
+<ModalDialog IsOpen="showEmployee" Title="@(employeeForm.Id == 0 ? "Alta de empleado" : "Editar empleado")" OnClose="CloseEmployee">
+    <EditForm Model="employeeForm" OnValidSubmit="SaveEmployeeAsync"><DataAnnotationsValidator /><ValidationSummary />
+        <div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Cédula</label><InputText class="form-control" @bind-Value="employeeForm.NationalId" /></div>
+            <div class="col-md-6"><label class="form-label">Nombre completo</label><InputText class="form-control" @bind-Value="employeeForm.FullName" /></div>
+            <div class="col-md-6"><label class="form-label">Cargo</label><InputText class="form-control" @bind-Value="employeeForm.Position" /></div>
+            <div class="col-md-6"><label class="form-label">Salario base</label><InputNumber class="form-control" @bind-Value="employeeForm.BaseSalary" /></div>
+            <div class="col-md-6"><label class="form-label">Fecha de nacimiento</label><InputDate class="form-control" @bind-Value="employeeForm.BirthDate" /></div>
+            <div class="col-md-6"><label class="form-label">Vencimiento del contrato</label><InputDate class="form-control" @bind-Value="employeeForm.ContractEndDate" /></div>
+            <div class="col-12"><label class="form-label">Cuenta bancaria</label><InputText class="form-control" @bind-Value="employeeForm.BankAccount" /></div>
+            <div class="col-12"><label class="form-label">Contrato PDF (máx. 10 MB)</label><InputFile OnChange="UploadContractAsync" accept="application/pdf,.pdf" /></div>
+        </div><button class="btn btn-primary mt-3">Guardar empleado</button>
+    </EditForm>
+</ModalDialog>
+
+@code {
+    private List<Employee> employees = [], contractAlerts = [], birthdays = [];
+    private List<HrRequest> requests = [];
+    private List<PayrollPayment> payrollPayments = [];
+    private Employee employeeForm = new();
+    private RequestForm requestForm = new() { StartDate = DateTime.Today, EndDate = DateTime.Today };
+    private PayrollForm payrollForm = new();
+    private PayrollEstimate? payrollResult;
+    private bool showEmployee, showRequest;
+    private string? message, error, payrollReceiptUrl;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        employees = await Service.EmployeesAsync();
+        requests = await Service.RequestsAsync();
+        payrollPayments = await Service.PayrollPaymentsAsync();
+        contractAlerts = await Service.ContractAlertsAsync();
+        birthdays = employees.Where(x => x.IsActive && x.BirthDate.Month == DateTime.Today.Month).ToList();
+        if (payrollForm.EmployeeId == 0) payrollForm.EmployeeId = employees.FirstOrDefault(x => x.IsActive)?.Id ?? 0;
+        if (requestForm.EmployeeId == 0) requestForm.EmployeeId = employees.FirstOrDefault(x => x.IsActive)?.Id ?? 0;
+    }
+    private void NewEmployee() { employeeForm = new Employee { BirthDate = DateTime.Today, ContractEndDate = DateTime.Today.AddYears(1) }; showEmployee = true; }
+    private void EditEmployee(Employee employee) { employeeForm = new Employee { Id = employee.Id, NationalId = employee.NationalId, FullName = employee.FullName, Position = employee.Position, BaseSalary = employee.BaseSalary, BirthDate = employee.BirthDate, ContractEndDate = employee.ContractEndDate, BankAccount = employee.BankAccount, ContractPath = employee.ContractPath, IsActive = employee.IsActive }; showEmployee = true; }
+    private Task CloseEmployee() { showEmployee = false; return Task.CompletedTask; }
+    private async Task UploadContractAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (!string.Equals(Path.GetExtension(file.Name), ".pdf", StringComparison.OrdinalIgnoreCase) || file.Size > 10_000_000) { error = "Seleccione un PDF de máximo 10 MB."; return; }
+        var directory = Path.Combine(Environment.WebRootPath, "uploads", "contratos");
+        Directory.CreateDirectory(directory);
+        var name = Guid.NewGuid().ToString("N") + ".pdf";
+        await using var target = File.Create(Path.Combine(directory, name));
+        await file.OpenReadStream(10_000_000).CopyToAsync(target);
+        employeeForm.ContractPath = name;
+        error = null;
+    }
+    private async Task SaveEmployeeAsync()
+    {
+        try { var (uid, name) = await CurrentUserAsync(); await Service.SaveEmployeeAsync(employeeForm, uid, name); showEmployee = false; message = "Empleado guardado."; await LoadAsync(); }
+        catch (DbUpdateException ex) { error = ex.InnerException?.Message ?? ex.Message; }
+    }
+    private async Task DeactivateAsync(int id)
+    {
+        var (uid, name) = await CurrentUserAsync(); await Service.DeleteEmployeeAsync(id, uid, name); message = "Empleado dado de baja (registro histórico conservado)."; await LoadAsync();
+    }
+    private async Task ReviewRequestAsync(int id, bool approve)
+    {
+        try { var (uid, name) = await CurrentUserAsync(); await Service.ReviewRequestAsync(id, approve, uid, name); message = "Novedad actualizada."; await LoadAsync(); }
+        catch (InvalidOperationException ex) { error = ex.Message; }
+    }
+    private async Task CreateRequestAsync()
+    {
+        if (requestForm.EndDate < requestForm.StartDate || requestForm.EmployeeId == 0) { error = "Verifique empleado y rango de fechas."; return; }
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.HrRequests.Add(new HrRequest { EmployeeId = requestForm.EmployeeId, Type = requestForm.Type, StartDate = requestForm.StartDate, EndDate = requestForm.EndDate });
+        await db.SaveChangesAsync();
+        var (uid, name) = await CurrentUserAsync(); await Audit.RecordAsync(uid, name, "RRHH", "Crear", nameof(HrRequest), requestForm.Type);
+        showRequest = false; requestForm = new() { EmployeeId = requestForm.EmployeeId, StartDate = DateTime.Today, EndDate = DateTime.Today }; message = "Solicitud creada."; await LoadAsync();
+    }
+    private async Task CalculatePayrollAsync()
+    {
+        try { payrollResult = await Service.PayrollEstimateAsync(payrollForm.EmployeeId, payrollForm.DaysWorked, payrollForm.PeriodStart, payrollForm.PeriodDays); }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException) { error = ex.Message; }
+    }
+    private async Task RegisterPayrollPaymentAsync()
+    {
+        try
+        {
+            var (uid, name) = await CurrentUserAsync();
+            var payment = await Service.RegisterPayrollPaymentAsync(payrollForm.EmployeeId, payrollForm.DaysWorked, payrollForm.PeriodStart, payrollForm.PeriodDays, uid, name);
+            payrollReceiptUrl = $"/documentos/pagos-nomina/{payment.Id}/pdf";
+            message = $"Pago {payment.Reference} registrado.";
+            payrollResult = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException or DbUpdateException) { error = ex.Message; }
+    }
+    private async Task<(string Id, string Name)> CurrentUserAsync()
+    {
+        var user = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+        return (user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "", user.Identity?.Name ?? "");
+    }
+    private sealed class RequestForm { public int EmployeeId { get; set; } public string Type { get; set; } = "Vacaciones"; public DateTime StartDate { get; set; } public DateTime EndDate { get; set; } }
+    private sealed class PayrollForm { public int EmployeeId { get; set; } public int PeriodDays { get; set; } = 15; public DateTime PeriodStart { get; set; } = DateTime.Today; public int DaysWorked { get; set; } = 15; }
+}

@@ -1,0 +1,77 @@
+@page "/inventario"
+@attribute [Authorize(Roles = "Almacenista")]
+@inject InventarioService Service
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Inventario</PageTitle>
+<div class="page-heading"><div><span class="eyebrow">OPERACIONES</span><h1>Inventario</h1><p>Existencias y trazabilidad física de productos.</p></div></div>
+@if (!string.IsNullOrEmpty(message)) { <div class="alert alert-info">@message</div> }
+@if (!string.IsNullOrEmpty(error)) { <div class="alert alert-danger">@error</div> }
+<div class="metric-grid mb-4"><article class="metric-card"><span>Referencias</span><strong>@products.Count</strong><small>Artículos en inventario</small></article><article class="metric-card"><span>Stock crítico</span><strong class="@(products.Any(x => x.StockCurrent <= x.StockMinimum) ? "text-danger" : "")">@products.Count(x => x.StockCurrent <= x.StockMinimum)</strong><small>Existencias iguales o menores al mínimo</small></article><article class="metric-card"><span>Movimientos registrados</span><strong>@movementCount</strong><small>Trazabilidad disponible</small></article></div>
+<div class="surface-card mb-4"><h2>Existencias actuales</h2><div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th>SKU</th><th>Producto</th><th>Stock actual</th><th>Stock mínimo</th><th>Estado</th><th></th></tr></thead><tbody>
+@foreach (var product in products) { <tr class="@(product.StockCurrent <= product.StockMinimum ? "table-danger" : "")"><td>@product.Sku</td><td>@product.Name</td><td>@product.StockCurrent</td><td>@product.StockMinimum</td><td>@(product.StockCurrent <= product.StockMinimum ? "Reabastecer" : "Disponible")</td><td><button class="btn btn-sm btn-outline-primary" @onclick="() => SelectProduct(product.Id)">Ver kardex</button></td></tr> }
+</tbody></table></div></div>
+<div class="row g-4">
+    <div class="col-lg-5"><div class="surface-card h-100"><h2>Registrar movimiento</h2><EditForm Model="movement" OnValidSubmit="SaveMovementAsync"><DataAnnotationsValidator />
+        <div class="mb-3"><label class="form-label">Producto</label><InputSelect class="form-select" @bind-Value="movement.ProductId">@foreach (var product in products) { <option value="@product.Id">@product.Sku — @product.Name</option> }</InputSelect></div>
+        <div class="mb-3"><label class="form-label">Tipo</label><InputSelect class="form-select" @bind-Value="movement.Type"><option>Entrada</option><option>Salida</option></InputSelect></div>
+        <div class="mb-3"><label class="form-label">Cantidad</label><InputNumber class="form-control" min="1" @bind-Value="movement.Quantity" /></div>
+        <div class="mb-3"><label class="form-label">@(movement.Type == "Entrada" ? "Número de orden de compra aprobada" : "Número del acta de salida")</label><InputText class="form-control" @bind-Value="movement.Reference" placeholder="OC-INICIAL-001" /></div>
+        <button class="btn btn-primary" disabled="@(products.Count == 0)">Aplicar movimiento</button>
+    </EditForm><p class="small text-secondary mt-3">Los movimientos actualizan stock y kardex dentro de una transacción. No se muestran valores monetarios en este módulo.</p></div></div>
+    <div class="col-lg-7"><div class="surface-card h-100"><div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h2>Kardex @if (selectedProduct is not null) { <small class="text-secondary">· @selectedProduct.Name</small> }</h2><button class="btn btn-sm btn-outline-secondary" @onclick="LoadAllMovementsAsync">Todos</button></div>
+        <div class="row g-2 mb-3"><div class="col"><label class="form-label">Desde</label><InputDate class="form-control" @bind-Value="filterFrom" /></div><div class="col"><label class="form-label">Hasta</label><InputDate class="form-control" @bind-Value="filterTo" /></div><div class="col-auto align-self-end"><button class="btn btn-outline-primary" @onclick="ApplyFiltersAsync">Filtrar</button></div></div>
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Fecha UTC</th><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Documento</th><th>Saldo resultante</th><th>Comprobante</th></tr></thead><tbody>@foreach (var item in movements) { <tr><td>@item.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@(products.FirstOrDefault(x => x.Id == item.ProductId)?.Name ?? "")</td><td>@item.Type</td><td>@item.Quantity</td><td>@item.Reference</td><td>@item.BalanceAfter</td><td><a href="@($"/documentos/movimientos-inventario/{item.Id}/pdf")">PDF</a></td></tr> }</tbody></table></div>
+    </div></div>
+</div>
+
+@code {
+    private List<InventoryStockDto> products = [];
+    private List<InventoryMovement> movements = [];
+    private InventoryMovementForm movement = new();
+    private InventoryStockDto? selectedProduct;
+    private DateTime? filterFrom, filterTo;
+    private int movementCount;
+    private string? message, error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        products = await Service.ProductsAsync();
+        if (products.Count > 0) { movement.ProductId = products[0].Id; await SelectProduct(products[0].Id); }
+    }
+    private async Task SelectProduct(int id)
+    {
+        selectedProduct = products.FirstOrDefault(x => x.Id == id);
+        movements = await Service.KardexAsync(id, filterFrom, filterTo);
+        movementCount = movements.Count;
+    }
+    private async Task LoadAllMovementsAsync()
+    {
+        selectedProduct = null;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var query = db.InventoryMovements.AsNoTracking().AsQueryable();
+        if (filterFrom.HasValue) query = query.Where(x => x.CreatedAtUtc >= filterFrom.Value);
+        if (filterTo.HasValue) query = query.Where(x => x.CreatedAtUtc < filterTo.Value.AddDays(1));
+        movements = await query.OrderByDescending(x => x.CreatedAtUtc).Take(250).ToListAsync();
+        movementCount = movements.Count;
+    }
+    private async Task ApplyFiltersAsync()
+    {
+        if (selectedProduct is not null) await SelectProduct(selectedProduct.Id); else await LoadAllMovementsAsync();
+    }
+    private async Task SaveMovementAsync()
+    {
+        try
+        {
+            var user = (await AuthStateProvider.GetAuthenticationStateAsync()).User;
+            await Service.RecordMovementAsync(movement.ProductId, movement.Quantity, movement.Type == "Entrada", movement.Reference, user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "", user.Identity?.Name ?? "");
+            message = "Movimiento registrado y saldo actualizado.";
+            products = await Service.ProductsAsync();
+            await SelectProduct(movement.ProductId);
+            movement = new() { ProductId = movement.ProductId, Type = movement.Type };
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException or OverflowException or DbUpdateConcurrencyException) { error = ex.Message; }
+    }
+    [Inject] private IDbContextFactory<ApplicationDbContext> DbFactory { get; set; } = default!;
+    private sealed class InventoryMovementForm { public int ProductId { get; set; } public string Type { get; set; } = "Entrada"; public int Quantity { get; set; } = 1; public string Reference { get; set; } = ""; }
+}
